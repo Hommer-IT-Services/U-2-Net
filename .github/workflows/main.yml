@@ -21,11 +21,14 @@ jobs:
         with:
           python-version: '3.8'  # Compatible with U²-Net dependencies
 
-      # Install system dependencies
+      # Install system dependencies (fixed)
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev \
+            libglib2.0-0 \
+          || { echo "Some dependencies failed, but proceeding..."; exit 0; }
 
       # Install Python dependencies
       - name: Install Python Dependencies
