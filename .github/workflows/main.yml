@@ -1,0 +1,119 @@
+name: Convert U²-Netp to ONNX and TFLite
+
+on:
+  push:
+    branches:
+      - main  # Trigger on push to main
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  convert-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the repository
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # Set up Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'  # Compatible with U²-Net dependencies
+
+      # Install system dependencies
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1-mesa-glx libglib2.0-0
+
+      # Install Python dependencies
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision onnx onnx-tf tensorflow numpy
+
+      # Download pre-trained U²-Netp model
+      - name: Download Pre-trained U²-Netp Model
+        run: |
+          mkdir -p saved_models/u2netp
+          wget https://github.com/xuebinqin/U-2-Net/raw/master/saved_models/u2netp/u2netp.pth -P saved_models/u2netp
+
+      # Convert PyTorch to ONNX
+      - name: Convert U²-Netp to ONNX
+        run: |
+          python - <<EOF
+          import torch
+          from model.u2net import U2NETP
+
+          # Load the model
+          model = U2NETP()
+          model.load_state_dict(torch.load("saved_models/u2netp/u2netp.pth", map_location="cpu"))
+          model.eval()
+
+          # Dummy input
+          dummy_input = torch.randn(1, 3, 320, 320)
+
+          # Export to ONNX
+          torch.onnx.export(
+              model,
+              dummy_input,
+              "u2netp.onnx",
+              opset_version=11,
+              input_names=["input"],
+              output_names=["output"],
+              dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}}
+          )
+          print("U²-Netp exported to ONNX successfully!")
+          EOF
+
+      # Verify ONNX model
+      - name: Verify ONNX Model
+        run: |
+          python -c "import onnx; model = onnx.load('u2netp.onnx'); onnx.checker.check_model(model); print('ONNX model is valid!')"
+
+      # Convert ONNX to TFLite
+      - name: Convert ONNX to TFLite
+        run: |
+          python - <<EOF
+          import onnx
+          from onnx_tf.backend import prepare
+          import tensorflow as tf
+          import numpy as np
+
+          # Load ONNX model
+          onnx_model = onnx.load("u2netp.onnx")
+          tf_rep = prepare(onnx_model)
+          tf_rep.export_graph("u2netp_tf")
+
+          # Convert to TFLite with INT8 quantization
+          converter = tf.lite.TFLiteConverter.from_saved_model("u2netp_tf")
+          converter.optimizations = [tf.lite.Optimize.DEFAULT]
+          converter.target_spec.supported_types = [tf.int8]
+          converter.inference_input_type = tf.int8
+          converter.inference_output_type = tf.int8
+
+          def representative_dataset():
+              for _ in range(100):
+                  yield [np.random.rand(1, 320, 320, 3).astype(np.float32)]
+
+          converter.representative_dataset = representative_dataset
+          tflite_model = converter.convert()
+
+          with open("u2netp.tflite", "wb") as f:
+              f.write(tflite_model)
+          print("Converted to TFLite successfully!")
+          EOF
+
+      # Upload ONNX and TFLite as artifacts
+      - name: Upload ONNX Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: u2netp-onnx
+          path: u2netp.onnx
+
+      - name: Upload TFLite Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: u2netp-tflite
+          path: u2netp.tflite
